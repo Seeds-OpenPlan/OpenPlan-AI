@@ -1,0 +1,6 @@
+# OpenPlan AI 서비스 — 최소 의존성 (W2 뼈대)
+fastapi>=0.115
+uvicorn[standard]>=0.30
+litellm>=1.50          # 상용(Claude)·로컬(Ollama/Qwen) 통합 게이트웨이 = "콘센트"
+pydantic>=2.7
+pydantic-settings>=2.3
