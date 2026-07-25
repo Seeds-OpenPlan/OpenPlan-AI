@@ -32,8 +32,10 @@ class Settings(BaseSettings):
 
     # ── 티어별 모델 ────────────────────────────────────────
     # 기본값은 Google AI Studio 무료 티어(카드 불필요). 유료 제공자로 바꾸려면 .env 만 고친다.
-    complex_model: str = "gemini/gemini-2.5-flash"       # 복합 추론: 계획 생성·재계획
-    light_model: str = "gemini/gemini-2.5-flash-lite"    # 경량: 분류·요약
+    # 2026-07-25 실제 왕복 검증된 조합. 모델은 은퇴하면 404("no longer available to new users")가
+    # 나므로, 실패하면 README 의 모델 목록 조회로 현재 가용 모델을 확인하고 갱신할 것.
+    complex_model: str = "gemini/gemini-3.6-flash"        # 복합 추론: 계획 생성·재계획
+    light_model: str = "gemini/gemini-3.5-flash-lite"     # 경량: 분류·요약
 
     # ── 로컬 (W5+, 지금 미사용). 설정되면 경량 티어가 로컬로 라우팅됨.
     local_model: str | None = None                       # 예: "ollama/qwen3:8b"

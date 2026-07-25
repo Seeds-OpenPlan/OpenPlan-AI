@@ -61,8 +61,17 @@ cp .env.example .env
 uvicorn app.main:app --reload --port 8000
 ```
 
-> WSL에서 `python -m venv` 가 `ensurepip is not available` 로 실패하면
-> `sudo apt install python3-venv`(또는 `python3.14-venv`) 설치 후 다시 시도한다.
+> **WSL에서 `ensurepip is not available` 로 실패하면** 두 가지 길이 있다.
+> ① `sudo apt install python3-venv` 후 재시도, 또는 ② **Windows Python 으로 만들기**(sudo 불필요):
+> ```cmd
+> cd /d C:\dev\openplan\OpenPlan-AI
+> python -m venv .venv
+> .venv\Scripts\python -m pip install --only-binary=:all: -r requirements.txt
+> .venv\Scripts\python -m uvicorn app.main:app --port 8000
+> ```
+> `--only-binary=:all:` 은 소스 빌드(Rust 요구)로 떨어지는 것을 막는다. 2026-07-25 검증은 ②로 했다.
+> 이때 서버는 Windows 쪽에 바인딩되므로 **WSL 셸에서 `curl localhost:8000` 은 닿지 않는다** —
+> Windows 터미널이나 `cmd.exe /c curl ...` 로 호출할 것.
 
 ## 확인
 ```bash
@@ -74,9 +83,18 @@ curl http://localhost:8000/health
 curl -X POST http://localhost:8000/ping \
   -H "Content-Type: application/json" \
   -d '{"prompt":"한 문장으로 자기소개해줘","tier":"complex"}'
-# → {"tier":"complex","model":"gemini/gemini-2.5-flash","output":"..."}
+# → {"tier":"complex","model":"gemini/gemini-3.6-flash","output":"..."}
 ```
 Swagger UI: `http://localhost:8000/docs`
+
+**검증 이력**: 2026-07-25 무료 티어에서 `complex`(gemini-3.6-flash)·`light`(gemini-3.5-flash-lite) 둘 다 200 왕복 확인.
+
+### 모델이 은퇴했을 때 (404)
+`no longer available to new users` 404 가 나면 모델이 내려간 것이다. **이 키로 실제 호출 가능한 목록**을 뽑아 `.env` 를 갱신한다:
+```bash
+curl -s "https://generativelanguage.googleapis.com/v1beta/models?key=$GEMINI_API_KEY&pageSize=200" \
+  | grep -o '"name": "models/[^"]*"'
+```
 
 ### 실패했을 때 읽는 법
 | 응답 | 뜻 |

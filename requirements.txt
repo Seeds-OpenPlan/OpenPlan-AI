@@ -1,6 +1,9 @@
 # OpenPlan AI 서비스 — 최소 의존성 (W2 뼈대)
 fastapi>=0.115
 uvicorn[standard]>=0.30
-litellm>=1.50          # 상용(Claude)·로컬(Ollama/Qwen) 통합 게이트웨이 = "콘센트"
+# 상용(Gemini·Claude·GPT)·로컬(Ollama/Qwen) 통합 게이트웨이 = "콘센트"
+# 상한 고정 이유: 1.92+ 는 Python 3.11 용 wheel 이 없어 sdist 빌드로 떨어지고, 그때 Rust/Cargo 를
+# 요구해 설치가 깨진다(2026-07-25 실측). Python 3.12+ 로 올린 뒤에 상한을 풀 것.
+litellm>=1.50,<1.92
 pydantic>=2.7
 pydantic-settings>=2.3
