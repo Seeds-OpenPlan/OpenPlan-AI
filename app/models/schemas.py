@@ -10,8 +10,8 @@ class HealthResponse(BaseModel):
 
 
 class PingRequest(BaseModel):
-    prompt: str = Field(..., description="Claude에 보낼 프롬프트 (뼈대 동작 검증용)")
-    tier: str = Field("complex", description="complex(상용 추론) | light(경량 — 현재 상용, W5+ 로컬)")
+    prompt: str = Field(..., description="모델에 보낼 프롬프트 (뼈대 동작 검증용)")
+    tier: str = Field("complex", description="complex(복합 추론) | light(경량 — W5+ 로컬 전환 대상)")
 
 
 class PingResponse(BaseModel):
