@@ -1,0 +1,41 @@
+# OpenPlan-AI CI — 3개 저장소 중 첫 파일럿.
+#
+# 왜 여기부터인가: BE 는 Testcontainers 가 Docker 를 요구해 러너 설정이 더 필요하고,
+# FE 는 테스트가 0건이라 작성부터 해야 한다. AI 서비스는 테스트 15건이 이미 있고
+# 모델 호출을 전부 monkeypatch 해서 **API 키 없이 통과**한다 — 시크릿 설정이 필요 없다.
+#
+# 이 저장소는 작업자가 1명이라 동료 리뷰가 성립하지 않는다(솔로 레인).
+# 리뷰어를 요구하면 영구 적체가 되므로, 안전망은 리뷰가 아니라 이 CI 가 맡는다.
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# 같은 브랜치에 연속 푸시하면 이전 실행을 취소한다 (사설 저장소 분(minute) 절약).
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          # 3.11 고정 — requirements.txt 의 litellm<1.92 상한이 3.11 wheel 기준이다.
+          # 3.12+ 로 올릴 때 그 상한도 같이 풀 것.
+          python-version: "3.11"
+          cache: pip
+
+      - name: 의존성 설치
+        run: pip install -r requirements.txt
+
+      - name: 테스트
+        # 키를 주지 않는다. 테스트가 키 없이 통과하는 것 자체가 계약이다 —
+        # 여기에 시크릿을 넣기 시작하면 그 성질이 조용히 깨진다.
+        run: pytest tests/ -v
