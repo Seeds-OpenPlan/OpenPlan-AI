@@ -7,3 +7,12 @@ uvicorn[standard]>=0.30
 litellm>=1.50,<1.92
 pydantic>=2.7
 pydantic-settings>=2.3
+# Windows 는 OS에 IANA tz DB가 없어 zoneinfo("Asia/Seoul") 이 ZoneInfoNotFoundError 로 죽는다
+# (2026-08-02 실측, /plans/draft 스키마의 zone 검증에서 재현). Linux/WSL 은 OS DB가 있어 없어도
+# 되지만, 두 플랫폼에서 동일하게 동작해야 하므로 명시적으로 고정한다.
+tzdata
+
+# ── 테스트 (W3) ─────────────────────────────────────────────
+# 모델 호출은 전부 monkeypatch로 목 처리 — API 키 없이 전체 스위트가 통과해야 한다.
+pytest>=8.0
+httpx>=0.27          # fastapi.testclient.TestClient 가 요구

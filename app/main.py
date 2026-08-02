@@ -8,14 +8,15 @@ Spring 백엔드가 REST로 이 서비스를 호출한다: AI 초안 생성 → 
 """
 from __future__ import annotations
 
+import asyncio
 import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
 
 from app.config import get_settings, required_env_for
-from app.models.schemas import HealthResponse, PingRequest, PingResponse
-from app.orchestrator.orchestrator import Orchestrator
+from app.models.schemas import HealthResponse, PingRequest, PingResponse, PlanDraftRequest, PlanDraftResponse
+from app.orchestrator.orchestrator import DRAFT_TIMEOUT_SECONDS, ModelOutputError, Orchestrator
 from app.router.model_router import ModelRouter, Tier
 
 settings = get_settings()
@@ -65,3 +66,37 @@ async def ping(req: PingRequest) -> PingResponse:
     except Exception as e:  # 모델명 오타·한도 초과·네트워크 등
         raise HTTPException(status_code=502, detail=f"LLM 호출 실패: {e}")
     return PingResponse(tier=result.tier.value, model=result.model, output=result.output)
+
+
+@app.post("/plans/draft", response_model=PlanDraftResponse)
+async def plans_draft(req: PlanDraftRequest) -> PlanDraftResponse:
+    """
+    주간 계획 초안 생성 (계약 §3·§4). 스키마 위반은 FastAPI/pydantic 이 자동으로 422를
+    낸다 — 여기서는 그 뒤(모델 키·호출·시간·형식)만 다룬다.
+
+    실패 매핑(계약 §4 실패 응답 표):
+      503 모델 키 미설정 · 502 모델 호출 실패/형식 오류 · 504 타임아웃(20초, §7 #2).
+    본문은 전부 {"detail": "…"} (FastAPI 기본형).
+    """
+    router: ModelRouter = app.state.router
+    orchestrator: Orchestrator = app.state.orchestrator
+
+    # /ping과 동일한 판단: 키 미설정을 호출 실패와 구분해 즉시 503으로 끊는다(계약 §4).
+    model = router.model_for(Tier.COMPLEX)
+    env_name = required_env_for(model)
+    if env_name and not os.environ.get(env_name):
+        raise HTTPException(
+            status_code=503,
+            detail=f"{env_name} 미설정 — 모델 '{model}' 을 호출할 수 없습니다. .env 를 확인하세요.",
+        )
+
+    try:
+        return await orchestrator.generate_plan(req)
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            status_code=504, detail=f"모델 응답이 {DRAFT_TIMEOUT_SECONDS:.0f}초 안에 오지 않았습니다."
+        )
+    except ModelOutputError as e:
+        raise HTTPException(status_code=502, detail=f"모델 응답 형식 오류: {e}")
+    except Exception as e:  # 한도 초과·네트워크·모델 은퇴 등
+        raise HTTPException(status_code=502, detail=f"LLM 호출 실패: {e}")
