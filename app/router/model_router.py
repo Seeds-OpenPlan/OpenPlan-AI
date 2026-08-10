@@ -53,8 +53,18 @@ class ModelRouter:
             "max_tokens": self._settings.max_tokens,
         }
         # 로컬(Ollama) 경로일 때만 base_url 전달
-        if model.startswith("ollama/") and self._settings.ollama_base_url:
-            kwargs["api_base"] = self._settings.ollama_base_url
+        if model.startswith("ollama/"):
+            if self._settings.ollama_base_url:
+                kwargs["api_base"] = self._settings.ollama_base_url
+            # Qwen3 는 추론(thinking) 모델이라 기본값이 "<think> 블록을 먼저 생성"이다.
+            # 끄지 않으면 max_tokens 를 추론에 다 쓰고 **본문이 빈 채로** 돌아온다.
+            # 2026-08-11 실측(qwen3:1.7b, max_tokens=256, CPU):
+            #   기본            25.8초 · 생성 256토큰(한도 소진) · 출력 ''   ← 빈 응답
+            #   think=False      3.9초 · 생성  19토큰            · 정상
+            #   프롬프트 /no_think 18.5초 · 생성 214토큰          · 정상이나 낭비
+            # 프롬프트에 /no_think 를 붙이는 방식은 추론을 줄일 뿐 끄지 못한다 — API 파라미터를 쓴다.
+            if "qwen3" in model:
+                kwargs["extra_body"] = {"think": False}
 
         resp = await litellm.acompletion(**kwargs)
         output = resp.choices[0].message.content or ""
