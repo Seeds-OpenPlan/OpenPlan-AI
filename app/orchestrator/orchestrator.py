@@ -27,16 +27,29 @@ from uuid import UUID
 from pydantic import ValidationError
 
 from app.models.schemas import (
+    ExplainRequest,
+    ExplainResponse,
     PlanDraftMeta,
     PlanDraftRequest,
     PlanDraftResponse,
     ProposedBlock,
+    ReplanOptionOut,
+    ReplanRequest,
+    ReplanResponse,
 )
 from app.router.model_router import ModelRouter, Tier
 
 # 계약 §7 #2 확정값(리드 통보) — 리드가 "추측하지 말고 이대로" 라고 명시한 상수라 그대로 하드코딩한다.
 # 초과 시 Spring이 규칙 폴백으로 넘어간다(호출자 책임 — 이 서비스는 그냥 늦게 실패할 뿐이다).
 DRAFT_TIMEOUT_SECONDS = 20.0
+
+# 재계획은 전략 3종을 한 번에 만들어야 해서 초안보다 길다. Spring 쪽 NFR-029(5초)는
+# **규칙 엔진 판정**의 예산이지 이 서비스의 예산이 아니다 — 둘을 같은 수로 묶으면
+# 상용 LLM 한 번 왕복에 5초를 주는 셈이라 정상 응답이 타임아웃으로 죽는다.
+REPLAN_TIMEOUT_SECONDS = 30.0
+
+# 설명은 요약 성격(LIGHT)이라 짧다.
+EXPLAIN_TIMEOUT_SECONDS = 15.0
 
 
 class ModelOutputError(Exception):
@@ -160,6 +173,149 @@ def _to_response(parsed: dict, tasks_to_place: list[UUID], model: str, latency_m
     )
 
 
+
+def _snapshot_payload(snapshot) -> dict:
+    """스냅샷 → 프롬프트에 실을 dict. 초안·재계획·설명이 같은 표현을 쓰도록 한 곳에 둔다."""
+    return {
+        "weekStartDate": snapshot.week_start_date.isoformat(),
+        "zone": snapshot.zone,
+        "referenceTime": snapshot.reference_time.isoformat().replace("+00:00", "Z"),
+        "existingBlocks": [b.model_dump(mode="json", by_alias=True) for b in snapshot.blocks],
+        "activeFixedSchedules": [
+            f.model_dump(mode="json", by_alias=True) for f in snapshot.active_fixed_schedules
+        ],
+        "availabilities": [a.model_dump(mode="json", by_alias=True) for a in snapshot.availabilities],
+        "taskFacts": {
+            str(task_id): facts.model_dump(mode="json", by_alias=True)
+            for task_id, facts in snapshot.task_facts.items()
+        },
+    }
+
+
+def _build_replan_prompt(req: ReplanRequest) -> str:
+    """
+    재계획 프롬프트 — 전략 3종을 한 번에 요청한다.
+
+    한 번에 부르는 이유: 세 번 나눠 부르면 전략끼리 서로를 모른 채 만들어져 **같은 안이 세 번**
+    나올 수 있다. 사용자에게 대안 셋을 보여주는 화면에서 셋이 똑같으면 고를 것이 없다.
+    """
+    data_json = json.dumps(_snapshot_payload(req.snapshot), ensure_ascii=False, indent=2)
+    return f"""당신은 OpenPlan 주간 계획의 재배치 대안을 제안하는 도우미입니다.
+
+아래는 현재 주간 계획 스냅샷입니다.
+
+{data_json}
+
+재계획이 필요해진 이유: {req.trigger}
+
+위 이유를 반영해 **서로 다른 전략 3종**의 재배치안을 만드십시오.
+
+- MINIMAL_CHANGE  : 지금 배치를 최대한 그대로 두고 꼭 필요한 것만 옮깁니다.
+- DEADLINE_FIRST  : 마감(dueDate)이 임박한 태스크를 앞으로 당깁니다.
+- WORKLOAD_BALANCE: 요일별 배치 시간을 고르게 폅니다.
+
+지침:
+- existingBlocks 의 블록을 옮기거나 빼는 것이 재배치입니다. 없던 태스크를 새로 만들지 마십시오.
+- taskFacts 에 없는 taskId 를 지어내지 마십시오.
+- availabilities 안에, activeFixedSchedules 와 겹치지 않게 두는 것을 우선하십시오. 다만 최종
+  겹침·마감·가용 판정은 별도 규칙 엔진이 하므로 완벽하지 않아도 됩니다.
+- 세 전략은 **서로 달라야** 합니다. 같은 배치를 세 번 내지 마십시오.
+- 점수는 매기지 마십시오. 숫자로 된 평가는 이 응답에 넣지 않습니다.
+
+아래 JSON 하나만 출력하십시오. 코드펜스·설명 문장 없이 JSON 객체만 출력하십시오.
+{{
+  "options": [
+    {{"strategyType": "MINIMAL_CHANGE",
+      "proposedBlocks": [
+        {{"type": "TASK", "taskId": "<UUID>", "scheduleId": null,
+          "startAt": "<ISO-8601 UTC, 'Z'>", "endAt": "<ISO-8601 UTC, 'Z'>"}}
+      ],
+      "changeSummary": "<무엇이 어떻게 바뀌는지 한국어 한두 문장 — 빈 문자열 금지>",
+      "reason": "<이 전략을 권하는 근거 한국어 문장 — 빈 문자열 금지>"}}
+  ]
+}}
+options 는 위 3종을 각각 하나씩, 정확히 3개여야 합니다.
+blockId 필드는 넣지 마십시오(저장 전 제안이라 ID는 Spring이 저장 시 만듭니다).
+"""
+
+
+def _to_replan_response(parsed: dict, req: ReplanRequest, model: str, latency_ms: int) -> ReplanResponse:
+    """
+    파싱된 LLM 출력 → 재계획 응답. 초안과 같이 **형식** 검증만 한다.
+
+    전략 3종이 정확히 한 번씩 나왔는지까지 보는 이유: 화면이 대안 비교라 하나가 빠지거나
+    둘이 같은 전략이면 사용자가 고를 것이 줄어든다. 이건 "배치가 옳은가"가 아니라
+    "요청한 모양으로 왔는가"라 경계 안이다.
+    """
+    if "options" not in parsed:
+        raise ModelOutputError("모델 출력에 필수 필드 누락: ['options']")
+
+    try:
+        options = [ReplanOptionOut.model_validate(o) for o in parsed["options"]]
+    except (ValidationError, ValueError, TypeError) as e:
+        raise ModelOutputError(f"모델 출력 형식이 계약과 다릅니다: {e}") from e
+
+    # 공백만 있는 문자열은 min_length=1 을 통과한다(길이가 1 이상이므로). 초안의 reason 을
+    # 오케스트레이터가 따로 strip 검사하는 것과 같은 이유로 여기서도 막는다 — 화면에 빈 칸이
+    # 뜨는 것과 근거가 없는 것은 사용자에게 같은 일이다(C-3).
+    for option in options:
+        for field, value in (("changeSummary", option.change_summary), ("reason", option.reason)):
+            if not value.strip():
+                raise ModelOutputError(f"{option.strategy_type} 의 {field} 가 비어 있습니다")
+
+    expected = ["MINIMAL_CHANGE", "DEADLINE_FIRST", "WORKLOAD_BALANCE"]
+    got = [o.strategy_type for o in options]
+    if sorted(got) != sorted(expected):
+        raise ModelOutputError(f"전략 3종이 각각 하나씩 와야 합니다: {got}")
+
+    known_ids = set(req.snapshot.task_facts)
+    unknown = sorted(
+        {str(b.task_id) for o in options for b in o.proposed_blocks
+         if b.task_id is not None and b.task_id not in known_ids}
+    )
+    if unknown:
+        raise ModelOutputError(f"모델이 스냅샷에 없는 taskId 를 참조했습니다: {unknown}")
+
+    # 선언 순으로 고정 — 모델이 낸 순서에 화면 순서가 흔들리면 같은 요청이 매번 다르게 보인다.
+    options.sort(key=lambda o: expected.index(o.strategy_type))
+    return ReplanResponse(options=options, meta=PlanDraftMeta(model=model, latency_ms=latency_ms))
+
+
+def _build_explain_prompt(req: ExplainRequest) -> str:
+    """
+    설명 프롬프트 — JSON 이 아니라 **문장**을 받는다.
+
+    구조화 출력을 요구하지 않는 이유: 결과가 사용자에게 그대로 보이는 한 덩어리 글이라
+    파싱할 구조가 없다. 형식을 강제하면 모델이 형식 맞추는 데 토큰을 쓰고 설명이 짧아진다.
+    """
+    data_json = json.dumps(_snapshot_payload(req.snapshot), ensure_ascii=False, indent=2)
+    if req.issues:
+        issues_block = "\n".join(f"- {i}" for i in req.issues)
+        issues_section = f"""
+규칙 엔진이 아래 문제를 지적했습니다. 이미 내려진 판정이므로 <b>그대로 전제</b>하고 설명하십시오.
+
+{issues_block}
+"""
+    else:
+        # 위반이 없을 때 "문제 없습니다"라고 쓰게 하지 않는다 — 그것은 판정이고, 판정은 규칙 몫이다.
+        issues_section = "\n규칙 엔진의 지적은 전달받지 않았습니다. 배치 내용만 설명하십시오.\n"
+
+    return f"""당신은 OpenPlan 주간 계획을 사용자에게 설명하는 도우미입니다.
+
+{data_json}
+{issues_section}
+지침:
+- 한국어 평문으로 3~6문장. 목록·표·마크다운 없이 문단으로 쓰십시오.
+- 언제 무엇이 얼마나 배치돼 있는지, 사용자가 알아야 할 것을 먼저 쓰십시오.
+- 지적받은 문제가 있으면 그것이 왜 문제인지, 무엇을 하면 되는지 덧붙이십시오.
+- <b>계획이 옳은지 그른지 스스로 판단하지 마십시오.</b> 지적받지 않은 것을 문제라고 하거나,
+  문제가 없다고 단정하지 마십시오. 판정은 규칙 엔진이 이미 한 것만 전달합니다.
+- 숫자를 지어내지 마십시오. 위 데이터에 있는 값만 쓰십시오.
+
+설명문만 출력하십시오. 머리말·꼬리말·따옴표 없이 본문만 쓰십시오.
+"""
+
+
 class Orchestrator:
     def __init__(self, router: ModelRouter) -> None:
         self._router = router
@@ -184,11 +340,51 @@ class Orchestrator:
         parsed = _parse_model_output(result.output)
         return _to_response(parsed, req.tasks_to_place, model=result.model, latency_ms=latency_ms)
 
-    async def replan(self, *args, **kwargs):
-        raise NotImplementedError("W4에서 구현")
+    async def replan(self, req: ReplanRequest) -> ReplanResponse:
+        """
+        스냅샷 + 재계획 사유 → 대안 3종(COMPLEX 티어).
 
-    async def explain(self, *args, **kwargs):
-        raise NotImplementedError("W4에서 구현")
+        초안과 같은 경계에 선다 — 만드는 것은 배치안이고, 그 안이 겹치는지·마감을 넘는지는
+        Spring 규칙 엔진이 판정한다. 그래서 여기서 하는 검증도 전부 **형식**이다.
+
+        KEEP_CURRENT(기준선)는 만들지 않는다. "안 바꾼 안"은 현재 스냅샷 그 자체라 생성할
+        것이 없고, 그것까지 AI 에게 시키면 없는 변경을 지어낸다(계약도 행 미생성으로 정의).
+        """
+        prompt = _build_replan_prompt(req)
+        start = time.monotonic()
+        result = await asyncio.wait_for(
+            self._router.complete(prompt, Tier.COMPLEX), timeout=REPLAN_TIMEOUT_SECONDS
+        )
+        latency_ms = int((time.monotonic() - start) * 1000)
+
+        parsed = _parse_model_output(result.output)
+        return _to_replan_response(parsed, req, model=result.model, latency_ms=latency_ms)
+
+    async def explain(self, req: ExplainRequest) -> ExplainResponse:
+        """
+        스냅샷 + 규칙 위반 사유 → 사용자용 설명(LIGHT 티어).
+
+        <b>LIGHT 인 것이 중요하다.</b> 이 작업은 이미 내려진 판정을 말로 풀어내는 요약이지
+        새로운 추론이 아니다. 경량 티어로 두면 로컬 Qwen 배선({@code LOCAL_MODEL})이 그대로
+        받아 가므로, 상용 모델 호출 없이 도는 첫 기능이 된다.
+
+        판정은 하지 않는다 — {@code issues} 가 비어 있으면 "문제 없음"을 <b>지어내지 않고</b>
+        배치 내용만 설명한다. AI 가 "이 계획은 문제 없습니다"라고 말하는 순간 그것은 판정이다.
+        """
+        prompt = _build_explain_prompt(req)
+        start = time.monotonic()
+        result = await asyncio.wait_for(
+            self._router.complete(prompt, Tier.LIGHT), timeout=EXPLAIN_TIMEOUT_SECONDS
+        )
+        latency_ms = int((time.monotonic() - start) * 1000)
+
+        explanation = _strip_code_fence(result.output).strip()
+        if not explanation:
+            raise ModelOutputError("모델이 빈 설명을 돌려주었습니다")
+        return ExplainResponse(
+            explanation=explanation,
+            meta=PlanDraftMeta(model=result.model, latency_ms=latency_ms),
+        )
 
     async def evaluate_task(self, *args, **kwargs):
         # W5: LIGHT 티어(분류·요약) — 로컬 Qwen 후보
