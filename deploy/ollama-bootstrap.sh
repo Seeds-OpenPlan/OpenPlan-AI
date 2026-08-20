@@ -1,9 +1,27 @@
 #!/usr/bin/env bash
 # GPU 인스턴스 부팅 스크립트 — EC2 launch wizard 의 "User data" 에 그대로 붙여넣는다.
 #
-# 전제: NVIDIA 드라이버가 이미 있는 AMI (Deep Learning Base OSS Nvidia Driver GPU AMI, Ubuntu).
-#       드라이버 없는 순정 Ubuntu 를 쓰면 이 스크립트 앞에 드라이버 설치 + 재부팅이 붙어
+# 전제: NVIDIA 드라이버가 이미 있는 "Deep Learning Base" 계열 AMI.
+#       배포판은 가리지 않는다 — 이 스크립트에 apt/dnf 같은 배포판 전용 명령이 없다.
+#       2026-08-21 실측은 **Deep Learning Base AMI with Single CUDA (Amazon Linux 2023)** 에서 했다
+#       (Quick Start 목록에 Ubuntu 판이 안 보여 그쪽을 골랐고, 그대로 동작했다).
+#       드라이버 없는 순정 이미지를 쓰면 이 스크립트 앞에 드라이버 설치 + 재부팅이 붙어
 #       "한 번에 끝내고 AMI 로 굽는다"는 목적이 깨진다.
+#
+# 🔴 사용자 데이터(User data)에 이 파일 내용을 **실제로 붙여넣었는지 확인할 것.**
+#    2026-08-21 에 비운 채로 시작해 /var/lib/cloud/instance/user-data.txt 가 0 바이트였고,
+#    부팅은 정상 완료된 것처럼 보이는데 아무것도 설치돼 있지 않았다. 증상이 "실패"가 아니라
+#    "아무 일도 없음"이라 로그를 찾다 시간을 쓴다. 확인:
+#      sudo ls -l /var/lib/cloud/instance/user-data.txt   # 0 이면 안 들어간 것
+#    안 들어갔으면 인스턴스를 다시 만들 것 없이 이 파일을 scp 해서 `sudo bash` 로 돌리면 된다.
+#
+# 실측 결과(2026-08-21 · g4dn.xlarge · ap-northeast-3):
+#   GPU        Tesla T4 · 15360 MiB · 드라이버 595.91.07
+#   루트       60G 중 21G 사용(AMI 자체 + 모델 5.2GB) → 40G 여유
+#   Ollama     0.32.15
+#   모델 상주  qwen3:8b · **100% GPU** · VRAM 5457/15360 MiB · context 4096
+#   think 차단 사소한 질문에 **생성토큰 3** (안 꺼졌으면 수백)
+#   접속       개발 PC → http://<공인IP>:11434/api/version 응답 확인
 #
 # 이 스크립트는 성공하면 조용히 끝나고, 실패하면 /var/log/ollama-bootstrap.log 에 이유를 남긴다.
 # 로그: sudo tail -f /var/log/cloud-init-output.log
