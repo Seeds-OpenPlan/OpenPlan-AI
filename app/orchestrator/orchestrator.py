@@ -38,6 +38,10 @@ from app.models.schemas import (
     ReplanResponse,
 )
 from app.router.model_router import ModelRouter, Tier
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 # 계약 §7 #2 확정값(리드 통보) — 리드가 "추측하지 말고 이대로" 라고 명시한 상수라 그대로 하드코딩한다.
 # 초과 시 Spring이 규칙 폴백으로 넘어간다(호출자 책임 — 이 서비스는 그냥 늦게 실패할 뿐이다).
@@ -132,6 +136,37 @@ def _parse_model_output(raw: str) -> dict:
     if not isinstance(parsed, dict):
         raise ModelOutputError("모델 출력이 JSON 객체가 아닙니다")
     return parsed
+
+
+async def _complete_json(router, prompt: str, tier, timeout: float):
+    """
+    모델을 부르고 JSON 으로 파싱한다. **파싱에 실패하면 한 번만 다시 묻는다.**
+
+    🔴 왜 재시도가 필요한가. LLM 출력은 간헐적으로 망가진다 — 2026-08-23 실측에서 같은
+    요청을 세 번 보냈더니 두 번은 정상이고 한 번이 `Expecting ',' delimiter` 로 깨졌다.
+    예산 부족이 아니었다(완료 1021 토큰 / 상한 2048). 그냥 그날의 출력이 어긋난 것이다.
+
+    재시도가 없으면 그 한 번이 그대로 502 가 되고, 재계획은 **규칙 폴백이 3전략을 만들지
+    못하므로** 사용자가 대안 화면을 아예 못 본다. 초안과 달리 대체할 것이 없다.
+
+    두 번까지만 한다 — 모델이 계속 같은 형식으로 실패하면 그건 프롬프트 문제이지
+    운이 아니고, 반복하면 한도만 태운다. 지연은 최악에 두 배가 되지만 타임아웃은
+    호출마다 따로 걸리므로 전체가 무한정 늘어나지는 않는다.
+
+    @return (parsed, model, latency_ms) — latency 는 성공한 호출 기준이다.
+    """
+    last_error: ModelOutputError | None = None
+    for attempt in (1, 2):
+        start = time.monotonic()
+        result = await asyncio.wait_for(router.complete(prompt, tier), timeout=timeout)
+        latency_ms = int((time.monotonic() - start) * 1000)
+        try:
+            return _parse_model_output(result.output), result.model, latency_ms
+        except ModelOutputError as e:
+            last_error = e
+            if attempt == 1:
+                logger.warning("모델 출력 파싱 실패 — 한 번 다시 묻는다: %s", e)
+    raise last_error  # type: ignore[misc]
 
 
 def _to_response(parsed: dict, tasks_to_place: list[UUID], model: str, latency_ms: int) -> PlanDraftResponse:
@@ -331,14 +366,10 @@ class Orchestrator:
         main.py 가 504로 매핑한다.
         """
         prompt = _build_draft_prompt(req)
-        start = time.monotonic()
-        result = await asyncio.wait_for(
-            self._router.complete(prompt, Tier.COMPLEX), timeout=DRAFT_TIMEOUT_SECONDS
+        parsed, model, latency_ms = await _complete_json(
+            self._router, prompt, Tier.COMPLEX, DRAFT_TIMEOUT_SECONDS
         )
-        latency_ms = int((time.monotonic() - start) * 1000)
-
-        parsed = _parse_model_output(result.output)
-        return _to_response(parsed, req.tasks_to_place, model=result.model, latency_ms=latency_ms)
+        return _to_response(parsed, req.tasks_to_place, model=model, latency_ms=latency_ms)
 
     async def replan(self, req: ReplanRequest) -> ReplanResponse:
         """
@@ -351,14 +382,10 @@ class Orchestrator:
         것이 없고, 그것까지 AI 에게 시키면 없는 변경을 지어낸다(계약도 행 미생성으로 정의).
         """
         prompt = _build_replan_prompt(req)
-        start = time.monotonic()
-        result = await asyncio.wait_for(
-            self._router.complete(prompt, Tier.COMPLEX), timeout=REPLAN_TIMEOUT_SECONDS
+        parsed, model, latency_ms = await _complete_json(
+            self._router, prompt, Tier.COMPLEX, REPLAN_TIMEOUT_SECONDS
         )
-        latency_ms = int((time.monotonic() - start) * 1000)
-
-        parsed = _parse_model_output(result.output)
-        return _to_replan_response(parsed, req, model=result.model, latency_ms=latency_ms)
+        return _to_replan_response(parsed, req, model=model, latency_ms=latency_ms)
 
     async def explain(self, req: ExplainRequest) -> ExplainResponse:
         """
