@@ -1,0 +1,11 @@
+# 자격증명 — 이미지에 절대 들어가면 안 된다.
+.env
+# 빌드에 불필요한 것들 (컨텍스트를 줄이면 빌드가 빨라진다)
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.git/
+.github/
+tests/
+README.md
