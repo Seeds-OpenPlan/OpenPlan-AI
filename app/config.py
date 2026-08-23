@@ -43,7 +43,19 @@ class Settings(BaseSettings):
 
     # ── 서비스 ─────────────────────────────────────────────
     port: int = 8000
-    max_tokens: int = 1024
+    # 🔴 상용 thinking 모델은 이 예산을 추론에 먼저 쓴다. 1024 로는 /plans/draft 의 JSON 이
+    #    문자열 중간에서 잘려 502 가 된다(2026-08-23 실측 — 완료 1020 중 thinking 984, 본문 80자).
+    #    reasoning_effort=minimal 과 함께라면 502 토큰이면 끝나지만 여유를 둔다.
+    max_tokens: int = 2048
+
+    # 🔴 상용 모델의 추론(thinking) 강도. Qwen 의 think=False(model_router)와 같은 목적이고,
+    #    상용 쪽은 이 파라미터를 쓴다. 2026-08-23 실측(gemini-3.6-flash, /plans/draft 실제 프롬프트):
+    #      기본     20.4초 · 완료 2359(thinking 1914)  ← DRAFT_TIMEOUT 20초를 넘겨 폴백한다
+    #      low      16.4초 · 완료 1455(thinking 1031)
+    #      minimal  10.9초 · 완료  502(thinking 없음)  ← 채택
+    #    계획 배치는 규칙 엔진이 다시 검증하므로(계약 §4) 모델의 긴 추론이 값을 더하지 않는다.
+    #    빈 문자열이면 파라미터를 붙이지 않는다(추론 제어가 없는 모델·제공자용 탈출구).
+    reasoning_effort: str = "minimal"
 
     def api_keys_by_env(self) -> dict[str, str]:
         """LiteLLM 이 읽는 환경변수 이름 → 설정값."""
