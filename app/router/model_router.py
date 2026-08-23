@@ -52,6 +52,16 @@ class ModelRouter:
             "messages": [{"role": "user", "content": prompt}],
             "max_tokens": self._settings.max_tokens,
         }
+        # 🔴 상용 thinking 모델(gemini-3.x 등)도 max_tokens 를 추론에 먼저 쓴다 — 아래 Qwen 분기와
+        #    같은 문제이고 해법만 다르다(상용은 API 파라미터가 think 가 아니라 reasoning_effort).
+        #    끄지 않으면 /plans/draft 의 JSON 이 문자열 중간에서 잘려 502 가 되고, Spring 은 매번
+        #    규칙으로 폴백한다 — "AI 를 켰는데 규칙만 도는" 증상이 되고 어디에도 실패로 안 남는다.
+        #    2026-08-23 실측(gemini-3.6-flash · /plans/draft 실제 프롬프트 · max_tokens=4096):
+        #      기본     20.4초 · 완료 2359(thinking 1914)  ← DRAFT_TIMEOUT 20초 초과
+        #      minimal  10.9초 · 완료  502(thinking 없음)
+        if not model.startswith("ollama/") and self._settings.reasoning_effort:
+            kwargs["reasoning_effort"] = self._settings.reasoning_effort
+
         # 로컬(Ollama) 경로일 때만 base_url 전달
         if model.startswith("ollama/"):
             if self._settings.ollama_base_url:
