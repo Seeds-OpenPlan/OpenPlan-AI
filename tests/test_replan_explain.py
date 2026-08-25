@@ -16,6 +16,7 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
+from app.config import get_settings, required_env_for
 from app.main import app
 from app.router.model_router import RouterResult, Tier
 
@@ -93,7 +94,13 @@ def _option(strategy: str, task_id: str = TASK_A) -> dict:
 
 @pytest.fixture
 def client(monkeypatch):
-    monkeypatch.setenv("GEMINI_API_KEY", "test-key-not-real")
+    # 🔴 제공자 이름을 박지 않는다 — 설정된 모델에서 키 이름을 유도한다. 박아 두면 제공자를
+    #    갈아탄 순간 이 더미 주입이 무효가 되고, 단위 테스트가 **진짜 API 를 호출**한다.
+    #    (2026-08-25 Gemini→Groq 전환에서 실제로 겪음)
+    for model in {get_settings().complex_model, get_settings().light_model}:
+        key_env = required_env_for(model)
+        if key_env:
+            monkeypatch.setenv(key_env, "test-key-not-real")
     with TestClient(app) as c:
         yield c
 

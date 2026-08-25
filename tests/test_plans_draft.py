@@ -2,8 +2,8 @@
 POST /plans/draft 테스트 (계약 §3·§4).
 
 모델 호출은 전부 목(mock)이다 — 실제 LLM API 키가 없어도 통과해야 한다(로컬 CI 부재,
-키는 로컬 .env에만 있다는 전제). `client` 픽스처가 GEMINI_API_KEY 를 테스트용 더미 값으로
-덮어써 503 분기를 피하고, 실제 네트워크 호출은 `router.complete` 를 monkeypatch 해서 막는다.
+키는 로컬 .env에만 있다는 전제). `client` 픽스처가 **설정된 제공자의** 키를 테스트용 더미 값으로
+덮어써 503 분기를 피하고(제공자 이름을 박지 않는다 — 갈아타면 무효가 된다), 실제 네트워크 호출은 `router.complete` 를 monkeypatch 해서 막는다.
 
 커버 범위(리드 지시 최소 커버 ⑴~⑺ + 형식 위반 추가 케이스):
   1. 정상 요청 → §4 응답 스키마 충족
@@ -24,6 +24,7 @@ from uuid import uuid4
 import pytest
 from fastapi.testclient import TestClient
 
+from app.config import get_settings, required_env_for
 from app.main import app
 from app.orchestrator import orchestrator as orchestrator_module
 from app.router.model_router import RouterResult, Tier
@@ -56,11 +57,23 @@ def _valid_payload() -> dict:
     }
 
 
+def _configured_key_env() -> str:
+    """지금 설정된 COMPLEX 모델이 요구하는 키 환경변수 이름.
+
+    🔴 제공자 이름을 여기 박아 두면 안 된다. 2026-08-25 에 Gemini→Groq 로 갈아탔을 때
+    `GEMINI_API_KEY` 를 지우는 것이 아무 효과가 없어져, 503 을 검증하던 테스트가
+    **실제 Groq API 를 호출해 200 을 받고** 실패했다. 단위 테스트가 네트워크를 친 것이다.
+    """
+    return required_env_for(get_settings().complex_model)
+
+
 @pytest.fixture
 def client(monkeypatch):
     # 실제 .env 에 진짜 키가 있어도(없어도) 테스트는 항상 이 더미 값으로 503 분기를 피한다.
     # 503 케이스는 이 값을 delenv 로 다시 지워서 별도로 검증한다.
-    monkeypatch.setenv("GEMINI_API_KEY", "test-key-not-real")
+    key_env = _configured_key_env()
+    if key_env:
+        monkeypatch.setenv(key_env, "test-key-not-real")
     with TestClient(app) as c:
         yield c
 
@@ -144,7 +157,12 @@ def test_schema_violation_422_non_utc_instant():
 
 
 def test_missing_api_key_503(client, monkeypatch):
-    monkeypatch.delenv("GEMINI_API_KEY", raising=False)
+    key_env = _configured_key_env()
+    assert key_env, (
+        f"설정된 모델 '{get_settings().complex_model}' 의 제공자가 "
+        "PROVIDER_ENV_BY_PREFIX 에 없다 — 키 검사가 통째로 건너뛰어진다"
+    )
+    monkeypatch.delenv(key_env, raising=False)
     resp = client.post("/plans/draft", json=_valid_payload())
     assert resp.status_code == 503
     assert "detail" in resp.json()

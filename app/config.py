@@ -7,10 +7,38 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 # 제공자를 바꾸는 일 = .env 의 모델 문자열과 키를 바꾸는 일. 호출 코드는 안 바뀐다.
 PROVIDER_ENV_BY_PREFIX: dict[str, str] = {
     "gemini/": "GEMINI_API_KEY",        # Google AI Studio (무료 티어 있음)
+    "groq/": "GROQ_API_KEY",            # Groq (무료 티어·카드 불필요) — reasoning_effort 주의, 아래 참조
     "anthropic/": "ANTHROPIC_API_KEY",
     "openai/": "OPENAI_API_KEY",
     "ollama/": "",                      # 로컬 — 키 불필요
 }
+
+# 🔴 제공자마다 reasoning_effort 가 받는 값이 다르다. 모르는 값을 보내면 호출이 통째로 거부되고,
+#    Spring 은 그것을 "AI 없음" 으로 읽어 규칙 폴백한다 — 화면은 멀쩡한데 AI 가 아닌 상태가 된다.
+#    2026-08-25 공식 문서 확인:
+#      gemini/  … "minimal" 사용 중(실측 채택값)
+#      groq/    … gpt-oss 계열은 "low" | "medium" | "high" 만. **"minimal" 은 무효**
+#    제공자를 바꾸면 .env 의 REASONING_EFFORT 도 함께 보라. 확신이 없으면 빈 문자열로 두면
+#    파라미터 자체를 붙이지 않는다(탈출구).
+REASONING_EFFORT_VALUES_BY_PREFIX: dict[str, tuple[str, ...]] = {
+    "groq/": ("low", "medium", "high"),
+}
+
+
+def invalid_reasoning_effort(model: str, effort: str) -> str | None:
+    """이 모델에 이 effort 를 보내면 거부되는가. 문제없으면 None, 아니면 사람이 읽을 사유.
+
+    모르는 제공자는 통과시킨다 — 여기서 막는 것은 **알려진 불일치**뿐이다.
+    """
+    if not effort:
+        return None
+    for prefix, allowed in REASONING_EFFORT_VALUES_BY_PREFIX.items():
+        if model.startswith(prefix) and effort not in allowed:
+            return (
+                f"모델 '{model}' 은 reasoning_effort='{effort}' 를 받지 않습니다 "
+                f"(허용: {', '.join(allowed)}). .env 의 REASONING_EFFORT 를 고치거나 비우십시오."
+            )
+    return None
 
 
 def required_env_for(model: str) -> str:
@@ -27,6 +55,7 @@ class Settings(BaseSettings):
     # ── 상용 LLM 키 ────────────────────────────────────────
     # 쓰는 제공자의 것만 채우면 된다. LiteLLM 이 모델 접두사를 보고 알아서 고른다.
     gemini_api_key: str = ""
+    groq_api_key: str = ""
     anthropic_api_key: str = ""
     openai_api_key: str = ""
 
@@ -61,6 +90,7 @@ class Settings(BaseSettings):
         """LiteLLM 이 읽는 환경변수 이름 → 설정값."""
         return {
             "GEMINI_API_KEY": self.gemini_api_key,
+            "GROQ_API_KEY": self.groq_api_key,
             "ANTHROPIC_API_KEY": self.anthropic_api_key,
             "OPENAI_API_KEY": self.openai_api_key,
         }

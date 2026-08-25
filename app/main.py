@@ -14,7 +14,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
 
-from app.config import get_settings, required_env_for
+from app.config import get_settings, invalid_reasoning_effort, required_env_for
 from app.models.schemas import (
     ExplainRequest,
     ExplainResponse,
@@ -45,6 +45,14 @@ async def lifespan(app: FastAPI):
     for env_name, value in settings.api_keys_by_env().items():
         if value:
             os.environ.setdefault(env_name, value)
+
+    # 🔴 제공자를 바꿨는데 reasoning_effort 를 안 고치면 **매 호출이 거부**된다. 그런데 Spring 은
+    #    그것을 "AI 없음" 으로 읽어 규칙 폴백하므로 화면에는 아무 이상이 없다 — 기동 때 크게 남긴다.
+    #    막지는 않는다(모델 문자열이 옳고 문서가 낡았을 수 있다). 서지 못하게 하는 대신 보이게 한다.
+    for tier_model in {settings.complex_model, settings.local_model or settings.light_model}:
+        reason = invalid_reasoning_effort(tier_model, settings.reasoning_effort)
+        if reason:
+            print(f"[경고] {reason}", flush=True)
 
     app.state.router = ModelRouter(settings)
     app.state.orchestrator = Orchestrator(app.state.router)  # 서브에이전트 자리 — W3+
