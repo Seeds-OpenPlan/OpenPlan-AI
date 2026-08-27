@@ -7,8 +7,8 @@ AI 계획 생성을 담당하는 **별도 Python 서비스**. Spring 백엔드�
 > 흐름: `사용자 요청 → (이 서비스) AI 초안 → Spring 규칙검증 → 사용자 확정 → 저장`
 
 현재 범위(W3): **AI 계획 초안 생성(`POST /plans/draft`)이 동작한다** — 스냅샷 + 배치할
-태스크 목록을 받아 초안을 제안한다. 재계획·설명(`replan`·`explain`, W4)과 태스크평가·개인화
-(`evaluate_task`·`personalize`, W5)는 아직 스텁이다.
+태스크 목록을 받아 초안을 제안한다. **재계획(`POST /plans/replan`)·설명(`POST /plans/explain`)도 동작한다.**
+태스크평가·개인화(`evaluate_task`·`personalize`, W5)는 아직 스텁이다.
 
 ## 구조
 ```
@@ -17,7 +17,7 @@ OpenPlan-AI/
 ├── .env.example               환경변수 템플릿 (실제 값은 로컬 .env 에만)
 ├── app/
 │   ├── config.py              env 설정 (제공자별 키·티어별 모델·포트)
-│   ├── main.py                FastAPI 앱 · /health · /ping · /plans/draft
+│   ├── main.py                FastAPI 앱 · /health · /ping · /plans/draft · /plans/replan · /plans/explain
 │   ├── models/schemas.py      요청·응답 스키마 (PlanSnapshot 등은 Spring rule/model/* 와 동형)
 │   ├── router/model_router.py "콘센트" — 티어→모델 라우팅 (상용/로컬)
 │   └── orchestrator/orchestrator.py  메인 에이전트 — generate_plan(계획 초안, W3) 구현.
@@ -173,7 +173,12 @@ Spring은 이 넷 중 503·502·504를 규칙 엔진 first-fit 폴백으로 받�
 - **W3 완료**: `orchestrator.generate_plan` — 스냅샷 + `tasksToPlace` → 계획 초안 생성
   (`POST /plans/draft`). Spring 쪽에서 제안을 스냅샷에 반영해 규칙검증(`PlanValidationPort`)에
   접합하는 것은 Spring 몫(계약 §5 호출 흐름).
-- **W4**: 재계획·설명 서브에이전트(`replan`·`explain`) — 아직 스텁.
+- **W4 완료**: 재계획·설명 서브에이전트.
+  - `POST /plans/replan` — 스냅샷 + 재계획 사유 → 전략 3종(MINIMAL_CHANGE·DEADLINE_FIRST·
+    WORKLOAD_BALANCE). KEEP_CURRENT 는 만들지 않는다(현재 계획 그 자체라 생성할 것이 없고,
+    시키면 없는 변경을 지어낸다). **점수는 내지 않는다** — 근거 없는 수치가 화면에 뜨는 것을 막는다.
+  - `POST /plans/explain` — **LIGHT 티어**라 `LOCAL_MODEL` 배선이 그대로 받아 간다.
+    규칙 엔진이 낸 사유 문자열을 그대로 받아 말로 풀어낼 뿐 **판정하지 않는다**.
 - **W5**: 태스크평가·개인화(경량, `evaluate_task`·`personalize`) + **로컬 Qwen 배선**(g4dn GPU 임대 + Ollama) — 아직 스텁.
 - **Spring REST 계약**: `../OpenPlan문서/2주차 작업내용/05. Spring ↔ AI 서비스 REST 계약 초안.md` 의
   §3(요청)·§4(응답)이 위 구현의 사양이다. 문서 자체의 합의 상태·§7 잔여 항목은 그 문서를 참조.

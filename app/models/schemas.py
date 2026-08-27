@@ -186,3 +186,75 @@ class PlanDraftResponse(CamelModel):
     unplaced_task_ids: list[UUID]
     reason: str = Field(..., min_length=1)
     meta: PlanDraftMeta
+
+
+# ── 재계획 (SS-07/08/09 · POST /plans/replan) ─────────────────────────────
+
+ReplanStrategyLiteral = Literal["MINIMAL_CHANGE", "DEADLINE_FIRST", "WORKLOAD_BALANCE"]
+"""
+AI 가 만드는 전략 3종.
+
+Spring 계약(openapi ReplanOption)의 strategyType 은 KEEP_CURRENT 를 포함한 4종이지만,
+KEEP_CURRENT 는 **현재 계획 그대로**라는 기준선이라 생성할 것이 없다(계약도 replanOptionId 를
+null·행 미생성으로 정의한다). AI 에게 "안 바꾼 안"을 만들라고 시키면 없는 변경을 지어낼 수 있다.
+"""
+
+
+class ReplanRequest(CamelModel):
+    """
+    POST /plans/replan 요청.
+
+    {@code tasksToPlace} 가 없는 것이 초안(draft)과의 차이다 — 재계획은 <b>이미 있는 배치를
+    다시 짜는</b> 일이라 대상이 스냅샷의 blocks 자체다. 무엇 때문에 다시 짜는지는
+    {@code trigger} 로 받는다: 그것이 없으면 모델이 "왜 바꾸는가"를 스스로 지어낸다.
+    """
+
+    snapshot: PlanSnapshot
+    trigger: str = Field(..., min_length=1)
+
+
+class ReplanOptionOut(CamelModel):
+    """
+    대안 하나 — Spring 의 ReplanOption 으로 그대로 옮겨진다.
+
+    <b>score 가 없다.</b> 계약의 score 는 nullable 이고, LLM 에게 점수를 만들라고 하면
+    근거 없는 수치가 사용자 화면에 뜬다. 순위가 필요하면 규칙 엔진이 낸 위반 수처럼
+    **셀 수 있는 것**으로 Spring 이 계산해야 한다 — 이 프로젝트의 "수치 날조 금지"가
+    LLM 출력에 특히 그대로 적용된다.
+    """
+
+    strategy_type: ReplanStrategyLiteral
+    proposed_blocks: list[ProposedBlock]
+    change_summary: str = Field(..., min_length=1)
+    reason: str = Field(..., min_length=1)
+
+
+class ReplanResponse(CamelModel):
+    """POST /plans/replan 응답. 전략 3종이 각각 하나씩 — 순서는 위 Literal 선언 순으로 고정한다."""
+
+    options: list[ReplanOptionOut]
+    meta: PlanDraftMeta
+
+
+# ── 계획 설명 (POST /plans/explain) ───────────────────────────────────────
+
+
+class ExplainRequest(CamelModel):
+    """
+    POST /plans/explain 요청.
+
+    {@code issues} 는 <b>규칙 엔진이 낸 사유 문자열 그대로</b>다(ValidationIssue.reason).
+    타입을 새로 만들지 않는 이유가 편의가 아니다 — 규칙 판정 스키마를 이 서비스가 다시 정의하면
+    두 곳이 갈라지고, 갈라진 순간 AI 가 <b>판정을 흉내내기</b> 시작한다. 문자열로만 받으면
+    AI 가 할 수 있는 일은 "이미 내려진 판정을 말로 풀어내는 것"뿐이다 — 경계가 타입으로 지켜진다.
+    """
+
+    snapshot: PlanSnapshot
+    issues: list[str] = Field(default_factory=list)
+
+
+class ExplainResponse(CamelModel):
+    """POST /plans/explain 응답. 사용자에게 그대로 보여줄 한국어 설명 한 덩어리."""
+
+    explanation: str = Field(..., min_length=1)
+    meta: PlanDraftMeta

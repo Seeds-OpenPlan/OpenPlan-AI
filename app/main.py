@@ -14,9 +14,25 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, HTTPException
 
-from app.config import get_settings, required_env_for
-from app.models.schemas import HealthResponse, PingRequest, PingResponse, PlanDraftRequest, PlanDraftResponse
-from app.orchestrator.orchestrator import DRAFT_TIMEOUT_SECONDS, ModelOutputError, Orchestrator
+from app.config import get_settings, invalid_reasoning_effort, required_env_for
+from app.models.schemas import (
+    ExplainRequest,
+    ExplainResponse,
+    HealthResponse,
+    PingRequest,
+    PingResponse,
+    PlanDraftRequest,
+    PlanDraftResponse,
+    ReplanRequest,
+    ReplanResponse,
+)
+from app.orchestrator.orchestrator import (
+    DRAFT_TIMEOUT_SECONDS,
+    EXPLAIN_TIMEOUT_SECONDS,
+    REPLAN_TIMEOUT_SECONDS,
+    ModelOutputError,
+    Orchestrator,
+)
 from app.router.model_router import ModelRouter, Tier
 
 settings = get_settings()
@@ -29,6 +45,14 @@ async def lifespan(app: FastAPI):
     for env_name, value in settings.api_keys_by_env().items():
         if value:
             os.environ.setdefault(env_name, value)
+
+    # 🔴 제공자를 바꿨는데 reasoning_effort 를 안 고치면 **매 호출이 거부**된다. 그런데 Spring 은
+    #    그것을 "AI 없음" 으로 읽어 규칙 폴백하므로 화면에는 아무 이상이 없다 — 기동 때 크게 남긴다.
+    #    막지는 않는다(모델 문자열이 옳고 문서가 낡았을 수 있다). 서지 못하게 하는 대신 보이게 한다.
+    for tier_model in {settings.complex_model, settings.local_model or settings.light_model}:
+        reason = invalid_reasoning_effort(tier_model, settings.reasoning_effort)
+        if reason:
+            print(f"[경고] {reason}", flush=True)
 
     app.state.router = ModelRouter(settings)
     app.state.orchestrator = Orchestrator(app.state.router)  # 서브에이전트 자리 — W3+
@@ -99,4 +123,68 @@ async def plans_draft(req: PlanDraftRequest) -> PlanDraftResponse:
     except ModelOutputError as e:
         raise HTTPException(status_code=502, detail=f"모델 응답 형식 오류: {e}")
     except Exception as e:  # 한도 초과·네트워크·모델 은퇴 등
+        raise HTTPException(status_code=502, detail=f"LLM 호출 실패: {e}")
+
+
+def _require_model_key(router: ModelRouter, tier: Tier) -> None:
+    """
+    키 미설정을 호출 실패와 구분해 즉시 503 으로 끊는다(계약 §4).
+
+    한 곳에 모으는 이유: 엔드포인트마다 복사하면 티어가 늘 때 한 군데를 빠뜨린다.
+    그 빠뜨림은 "키가 없는데 502 로 보고되는" 모양이라 원인 찾기가 오래 걸린다.
+    """
+    model = router.model_for(tier)
+    env_name = required_env_for(model)
+    if env_name and not os.environ.get(env_name):
+        raise HTTPException(
+            status_code=503,
+            detail=f"{env_name} 미설정 — 모델 '{model}' 을 호출할 수 없습니다. .env 를 확인하세요.",
+        )
+
+
+@app.post("/plans/replan", response_model=ReplanResponse)
+async def plans_replan(req: ReplanRequest) -> ReplanResponse:
+    """
+    재계획 대안 3종 생성 (SS-07/08/09).
+
+    실패 매핑은 /plans/draft 와 같다 — 503 키 미설정 · 502 호출/형식 오류 · 504 타임아웃.
+    타임아웃만 30초로 다르다(전략 3종을 한 번에 만들어 초안보다 길다).
+    """
+    router: ModelRouter = app.state.router
+    orchestrator: Orchestrator = app.state.orchestrator
+    _require_model_key(router, Tier.COMPLEX)
+
+    try:
+        return await orchestrator.replan(req)
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            status_code=504, detail=f"모델 응답이 {REPLAN_TIMEOUT_SECONDS:.0f}초 안에 오지 않았습니다."
+        )
+    except ModelOutputError as e:
+        raise HTTPException(status_code=502, detail=f"모델 응답 형식 오류: {e}")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"LLM 호출 실패: {e}")
+
+
+@app.post("/plans/explain", response_model=ExplainResponse)
+async def plans_explain(req: ExplainRequest) -> ExplainResponse:
+    """
+    계획 설명 생성 — <b>LIGHT 티어</b>라 로컬 Qwen 배선({@code LOCAL_MODEL})이 그대로 받아 간다.
+
+    키 검사도 LIGHT 기준으로 한다. COMPLEX 기준으로 검사하면 로컬 모델만 쓰는 구성에서
+    "상용 키가 없다"며 503 이 나간다 — 정작 이 요청은 키가 필요 없는데도.
+    """
+    router: ModelRouter = app.state.router
+    orchestrator: Orchestrator = app.state.orchestrator
+    _require_model_key(router, Tier.LIGHT)
+
+    try:
+        return await orchestrator.explain(req)
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            status_code=504, detail=f"모델 응답이 {EXPLAIN_TIMEOUT_SECONDS:.0f}초 안에 오지 않았습니다."
+        )
+    except ModelOutputError as e:
+        raise HTTPException(status_code=502, detail=f"모델 응답 형식 오류: {e}")
+    except Exception as e:
         raise HTTPException(status_code=502, detail=f"LLM 호출 실패: {e}")
