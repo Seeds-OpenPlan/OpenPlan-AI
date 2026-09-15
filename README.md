@@ -38,8 +38,15 @@ OpenPlan-AI/
 | `openai/` | OpenAI | `OPENAI_API_KEY` |
 | `ollama/` | 로컬 (W5+) | 없음 |
 
-**기본값은 Z.ai GLM flash 무료 모델**이다(카드 등록 불필요 — `zai/glm-4.7-flash` · `zai/glm-4.5-flash`).
-다른 제공자로 갈아탈 때 고치는 건 `.env` 뿐이고 호출 코드는 그대로다.
+**기본값은 Groq 무료 티어**다(카드 등록 불필요). 다른 제공자로 갈아탈 때 고치는 건 `.env` 뿐이고
+호출 코드는 그대로다.
+
+> 🔴 **Z.ai(GLM) 은 배선은 되어 있지만 기본값이 아니다.** 2026-09-15 에 같은 프롬프트·같은 코드
+> 경로로 재 보니 **groq 평균 1.34초 / `glm-4.5-flash` 평균 26.81초·최악 36.71초**였다.
+> `DRAFT_TIMEOUT` 20초를 상시로 넘겨 `/plans/draft` 가 504 로 떨어지고 규칙 폴백이 된다.
+> 무료로 도는 GLM 은 `glm-4.5-flash`·`glm-4.7-flash` 둘뿐이고(나머지는 `1113` 잔액 필요),
+> `glm-4.7-flash` 는 5회 중 4회가 `1305 overloaded` 로 거부됐다. `glm-5.3-flash` 는 잔액이
+> 있어도 **thinking 을 끌 수 없는 모델**(`1210`)이라 라우터에 예외가 하나 더 필요하다.
 
 > 🔴 **갈아탈 때 모델 문자열만 바꾸면 안 된다.** 같이 봐야 하는 것이 셋이다.
 > ① 그 제공자의 **키**(위 표) — `docker-compose.prod.yml` 은 거기 **적힌 키만** 컨테이너로 넘긴다
@@ -57,14 +64,14 @@ OpenPlan-AI/
 > 제공자를 바꾸면 **데이터가 가는 회사와 나라가 바뀐다.**
 > (W5의 "경량·개인정보 티어는 로컬 Qwen" 방향과 연결된다)
 
-## 준비 — Z.ai 키 발급
+## 준비 — Groq 키 발급
 
-1. `https://z.ai/manage-apikey/apikey-list` 접속 → 로그인
-2. **Create API key** → 발급된 키 복사
-3. 로컬 `.env` 의 `ZAI_API_KEY` 에 붙여넣기
+1. `https://console.groq.com/keys` 접속 → 로그인
+2. **Create API Key** → 발급된 키(`gsk_...`) 복사
+3. 로컬 `.env` 의 `GROQ_API_KEY` 에 붙여넣기
 
-카드 등록이 필요 없다. flash 계열은 무료지만 속도 위주로 조정된 모델이고 한도가 있다.
-다른 제공자로 시작하려면 위 표의 키를 채우고 `COMPLEX_MODEL`·`LIGHT_MODEL` 을 함께 바꾼다.
+카드 등록이 필요 없다. 다른 제공자로 시작하려면 위 표의 키를 채우고
+`COMPLEX_MODEL`·`LIGHT_MODEL`·`REASONING_EFFORT` 를 **함께** 바꾼다.
 
 ## 실행법
 ```bash
@@ -73,7 +80,7 @@ python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\act
 pip install -r requirements.txt
 
 cp .env.example .env
-# .env 열어서 ZAI_API_KEY 를 실제 키로 채우기
+# .env 열어서 GROQ_API_KEY 를 실제 키로 채우기
 
 uvicorn app.main:app --reload --port 8000
 ```
@@ -137,7 +144,7 @@ Swagger UI: `http://localhost:8000/docs`
 ### 모델이 은퇴했을 때 (404)
 `no longer available to new users` 404 가 나면 모델이 내려간 것이다. **이 키로 실제 호출 가능한 목록**을 뽑아 `.env` 를 갱신한다:
 ```bash
-# Z.ai (현재 기본)
+# Z.ai
 curl -s https://api.z.ai/api/paas/v4/models -H "Authorization: Bearer $ZAI_API_KEY" \
   | grep -o '"id":"[^"]*"'
 

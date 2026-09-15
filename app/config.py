@@ -68,13 +68,19 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
 
     # ── 티어별 모델 ────────────────────────────────────────
-    # 기본값은 Z.ai GLM flash 무료 2종(카드 불필요). 다른 제공자로 바꾸려면 .env 만 고친다.
+    # 기본값은 Groq 무료 티어(카드 불필요). 다른 제공자로 바꾸려면 .env 만 고친다.
     # 모델은 은퇴하면 404("no longer available to new users")가 나므로, 실패하면 제공자의
     # 모델 목록으로 현재 가용 모델을 확인하고 갱신할 것.
     # 🔴 이 기본값을 바꿀 때 reasoning_effort 도 함께 보라 — 아래 참조. 둘이 어긋나면
     #    매 호출이 거부되는데 화면은 멀쩡하다. 그 모순은 test_provider_routing 이 잡는다.
-    complex_model: str = "zai/glm-4.7-flash"              # 복합 추론: 계획 생성·재계획
-    light_model: str = "zai/glm-4.5-flash"                # 경량: 분류·요약
+    #
+    # 🔴 zai(GLM) 배선은 되어 있으나 **기본값으로 쓰지 않는다.** 2026-09-15 실측(같은 프롬프트·
+    #    같은 코드 경로): groq 평균 1.34초 / zai glm-4.5-flash 평균 26.81초·최악 36.71초.
+    #    DRAFT_TIMEOUT 20초를 상시로 넘겨 /plans/draft 가 504 → 규칙 폴백이 된다.
+    #    무료로 도는 GLM 은 glm-4.5-flash·glm-4.7-flash 둘뿐이고(나머지는 잔액 필요),
+    #    4.7-flash 는 5회 중 4회가 1305 overloaded 로 거부됐다.
+    complex_model: str = "groq/openai/gpt-oss-120b"       # 복합 추론: 계획 생성·재계획
+    light_model: str = "groq/openai/gpt-oss-20b"          # 경량: 분류·요약
 
     # ── 로컬 (W5+, 지금 미사용). 설정되면 경량 티어가 로컬로 라우팅됨.
     local_model: str | None = None                       # 예: "ollama/qwen3:8b"
@@ -94,11 +100,10 @@ class Settings(BaseSettings):
     #      minimal  10.9초 · 완료  502(thinking 없음)  ← 채택
     #    계획 배치는 규칙 엔진이 다시 검증하므로(계약 §4) 모델의 긴 추론이 값을 더하지 않는다.
     #    빈 문자열이면 파라미터를 붙이지 않는다(추론 제어가 없는 모델·제공자용 탈출구).
-    # 🔴 기본값이 비어 있는 이유는 "설정을 안 했다" 가 아니라 **기본 제공자(zai)가 이 파라미터를
-    #    아예 안 받기 때문**이다. 채우면 매 호출이 UnsupportedParamsError 로 거부된다.
-    #    gemini 로 되돌릴 때 "minimal", groq 면 "low" 를 .env 에 넣을 것.
+    # 🔴 기본값 "low" 는 기본 제공자(groq)의 허용값이다. **제공자를 바꾸면 이것도 바꾼다** —
+    #    gemini 는 "minimal", zai 는 **반드시 빈 문자열**(어떤 값도 안 받는다).
     #    GLM 의 추론 억제는 이 파라미터가 아니라 model_router 의 thinking=disabled 가 한다.
-    reasoning_effort: str = ""
+    reasoning_effort: str = "low"
 
     def api_keys_by_env(self) -> dict[str, str]:
         """LiteLLM 이 읽는 환경변수 이름 → 설정값."""
