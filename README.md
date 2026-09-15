@@ -31,27 +31,40 @@ OpenPlan-AI/
 
 | 접두사 | 제공자 | 필요한 키 |
 | --- | --- | --- |
+| `zai/` | Z.ai (GLM) | `ZAI_API_KEY` |
+| `groq/` | Groq | `GROQ_API_KEY` |
 | `gemini/` | Google AI Studio | `GEMINI_API_KEY` |
 | `anthropic/` | Anthropic | `ANTHROPIC_API_KEY` |
 | `openai/` | OpenAI | `OPENAI_API_KEY` |
 | `ollama/` | 로컬 (W5+) | 없음 |
 
-**기본값은 Google AI Studio 무료 티어**다(카드 등록 없이 시작할 수 있어 W2~W4 개발용으로 적합).
-유료 제공자로 갈아탈 때 고치는 건 `.env` 뿐이고 호출 코드는 그대로다.
+**기본값은 Z.ai GLM flash 무료 모델**이다(카드 등록 불필요 — `zai/glm-4.7-flash` · `zai/glm-4.5-flash`).
+다른 제공자로 갈아탈 때 고치는 건 `.env` 뿐이고 호출 코드는 그대로다.
 
-> ⚠️ **무료 티어의 대가**: Google AI Studio 무료 티어는 EEA·EU·영국·스위스 **밖**에서는
-> 프롬프트와 출력이 모델 학습에 사용된다. 지금처럼 시드·더미 데이터로 개발할 때는 괜찮지만,
-> **실제 사용자 일정 데이터가 들어가는 시점에는 유료 키나 로컬 모델로 바꿔야 한다.**
+> 🔴 **갈아탈 때 모델 문자열만 바꾸면 안 된다.** 같이 봐야 하는 것이 셋이다.
+> ① 그 제공자의 **키**(위 표) — `docker-compose.prod.yml` 은 거기 **적힌 키만** 컨테이너로 넘긴다
+> ② **`REASONING_EFFORT`** — 허용값이 제공자마다 다르고, `zai` 는 **어떤 값도 받지 않는다**(비울 것).
+>    틀리면 매 호출이 거부되는데 Spring 이 규칙 폴백해 **화면은 멀쩡하다**
+> ③ **추론(thinking) 기본값** — GLM 은 기본 켜짐이라 `model_router` 가 `thinking=disabled` 를 보낸다.
+>    안 끄면 `max_tokens` 를 추론에 먼저 쓰고 `/plans/draft` 의 JSON 이 잘려 502 가 된다.
+
+> ⚠️ **무료 티어의 대가는 제공자마다 다르고, 바꿀 때마다 다시 확인해야 한다.**
+> Google AI Studio 무료 티어는 EEA·EU·영국·스위스 **밖**에서 프롬프트와 출력이 모델 학습에
+> 사용된다(실측 확인분). **다른 제공자의 정책은 그 제공자 약관에서 따로 확인할 것 — 여기 적힌
+> 것을 일반화하지 말 것.** 시드·더미 데이터로 개발할 때는 괜찮지만,
+> **실제 사용자 일정 데이터가 들어가는 시점에는 (가) 그 제공자의 학습 이용 정책과
+> (나) 개인정보처리방침의 국외 이전 고지가 현재 제공자와 맞는지**를 함께 봐야 한다.
+> 제공자를 바꾸면 **데이터가 가는 회사와 나라가 바뀐다.**
 > (W5의 "경량·개인정보 티어는 로컬 Qwen" 방향과 연결된다)
 
-## 준비 — Google AI Studio 키 발급
+## 준비 — Z.ai 키 발급
 
-1. `https://aistudio.google.com/apikey` 접속 → Google 계정 로그인
-2. **Create API key** → 프로젝트 선택(없으면 새로 생성)
-3. 발급된 키(`AIza...`)를 복사 → 로컬 `.env` 의 `GEMINI_API_KEY` 에 붙여넣기
+1. `https://z.ai/manage-apikey/apikey-list` 접속 → 로그인
+2. **Create API key** → 발급된 키 복사
+3. 로컬 `.env` 의 `ZAI_API_KEY` 에 붙여넣기
 
-카드 등록이 필요 없다. 무료 티어에는 분당·일일 요청 한도가 있으므로, W3에서 서브에이전트를
-여러 개 돌리기 시작하면 한도에 걸릴 수 있다(그때는 유료 키로 교체).
+카드 등록이 필요 없다. flash 계열은 무료지만 속도 위주로 조정된 모델이고 한도가 있다.
+다른 제공자로 시작하려면 위 표의 키를 채우고 `COMPLEX_MODEL`·`LIGHT_MODEL` 을 함께 바꾼다.
 
 ## 실행법
 ```bash
@@ -60,7 +73,7 @@ python -m venv .venv && source .venv/bin/activate   # Windows: .venv\Scripts\act
 pip install -r requirements.txt
 
 cp .env.example .env
-# .env 열어서 GEMINI_API_KEY 를 실제 키로 채우기
+# .env 열어서 ZAI_API_KEY 를 실제 키로 채우기
 
 uvicorn app.main:app --reload --port 8000
 ```
@@ -124,6 +137,11 @@ Swagger UI: `http://localhost:8000/docs`
 ### 모델이 은퇴했을 때 (404)
 `no longer available to new users` 404 가 나면 모델이 내려간 것이다. **이 키로 실제 호출 가능한 목록**을 뽑아 `.env` 를 갱신한다:
 ```bash
+# Z.ai (현재 기본)
+curl -s https://api.z.ai/api/paas/v4/models -H "Authorization: Bearer $ZAI_API_KEY" \
+  | grep -o '"id":"[^"]*"'
+
+# Gemini
 curl -s "https://generativelanguage.googleapis.com/v1beta/models?key=$GEMINI_API_KEY&pageSize=200" \
   | grep -o '"name": "models/[^"]*"'
 ```
