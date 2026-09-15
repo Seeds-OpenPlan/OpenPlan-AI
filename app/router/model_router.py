@@ -62,6 +62,17 @@ class ModelRouter:
         if not model.startswith("ollama/") and self._settings.reasoning_effort:
             kwargs["reasoning_effort"] = self._settings.reasoning_effort
 
+        # 🔴 GLM(zai) 은 thinking 이 **기본 켜짐**이다(공식 문서 default: "enabled").
+        #    끄지 않으면 아래 Qwen3 와 똑같이 max_tokens 를 추론에 먼저 써 /plans/draft 의 JSON 이
+        #    문자열 중간에서 잘리고 502 가 된다 — 같은 함정을 제공자만 바꿔 세 번째로 밟는 자리다.
+        #    제공자마다 이름만 다르다: Qwen3 는 think, gemini 는 reasoning_effort, GLM 은 thinking.
+        #    🔴 LiteLLM 의 정식 thinking 파라미터를 쓰지 않고 extra_body 로 보내는 이유:
+        #       glm-4.7-flash 는 받지만 **glm-4.5-flash 는 UnsupportedParamsError 로 거부**한다
+        #       (2026-09-15 실측). 허용 여부가 LiteLLM 의 모델 표에 달려 있어 모델을 바꾸면
+        #       조용히 깨진다. extra_body 는 검사 없이 그대로 실려 두 모델에서 같게 동작한다.
+        if model.startswith("zai/"):
+            kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
+
         # 로컬(Ollama) 경로일 때만 base_url 전달
         if model.startswith("ollama/"):
             if self._settings.ollama_base_url:
