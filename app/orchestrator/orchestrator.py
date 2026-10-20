@@ -23,6 +23,7 @@ import json
 import re
 import time
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 from pydantic import ValidationError
 
@@ -227,6 +228,68 @@ def _snapshot_payload(snapshot) -> dict:
     }
 
 
+_WEEKDAY_KO = {"MON": "월", "TUE": "화", "WED": "수", "THU": "목", "FRI": "금", "SAT": "토", "SUN": "일"}
+
+
+def _md(d) -> str:
+    return f"{d.month}월 {d.day}일"
+
+
+def _explain_view(snapshot) -> dict:
+    """
+    설명 전용 표현 — 사람에게 읽힐 글의 재료라 **사람 단위**로 바꿔 싣는다.
+
+    🔴 _snapshot_payload 를 그대로 쓰면 안 된다(2026-10-20 실측, qwen3:4b·gpt-oss-20b 둘 다):
+       - UTC 시각을 그대로 읽어 한국 시간 10시 블록을 "오전 1시"라고 쓰고, 거기서 "가용 시간을
+         벗어난다"는 **없는 판정**까지 만들었다.
+       - UUID 를 작업 이름처럼 본문에 그대로 옮겼다("11111111-…번 작업").
+       초안·재계획은 응답에서 ID 를 되돌려 받아야 하므로 공용 표현은 건드리지 않고 여기서만 바꾼다.
+    """
+    zone = ZoneInfo(snapshot.zone)
+    labels: dict = {}
+
+    def label(task_id) -> str:
+        if task_id not in labels:
+            labels[task_id] = f"작업 {len(labels) + 1}"
+        return labels[task_id]
+
+    blocks = []
+    for b in sorted(snapshot.blocks, key=lambda b: b.start_at):
+        start, end = b.start_at.astimezone(zone), b.end_at.astimezone(zone)
+        item = {
+            "날짜": f"{_md(start)}({'월화수목금토일'[start.weekday()]})",
+            "시간": f"{start:%H:%M}~{end:%H:%M}",
+            "종류": "작업" if b.type == "TASK" else "일정",
+        }
+        if b.task_id is not None:
+            item["작업"] = label(b.task_id)
+        blocks.append(item)
+
+    tasks = {}
+    for task_id, f in snapshot.task_facts.items():
+        facts: dict = {"예상 소요": f"{f.estimated_minutes}분", "우선순위": f.priority}
+        if f.due_date:
+            facts["마감"] = _md(f.due_date)
+        if f.wbs_start and f.wbs_end:
+            facts["작업 기간"] = f"{_md(f.wbs_start)}~{_md(f.wbs_end)}"
+        tasks[label(task_id)] = facts
+
+    return {
+        "주간": f"{_md(snapshot.week_start_date)}부터 7일",
+        "배치된 블록": blocks,
+        "고정 일정": [
+            {"요일": _WEEKDAY_KO[f.weekday], "시간": f"{f.start_time}~{f.end_time}"}
+            for f in snapshot.active_fixed_schedules
+        ],
+        "가용 시간": [
+            {"요일": _WEEKDAY_KO[a.weekday], "시간": f"{a.start_time}~{a.end_time}"}
+            for a in snapshot.availabilities
+            if a.active
+        ],
+        "작업": tasks,
+    }
+
+
 def _build_replan_prompt(req: ReplanRequest) -> str:
     """
     재계획 프롬프트 — 전략 3종을 한 번에 요청한다.
@@ -323,7 +386,7 @@ def _build_explain_prompt(req: ExplainRequest) -> str:
     구조화 출력을 요구하지 않는 이유: 결과가 사용자에게 그대로 보이는 한 덩어리 글이라
     파싱할 구조가 없다. 형식을 강제하면 모델이 형식 맞추는 데 토큰을 쓰고 설명이 짧아진다.
     """
-    data_json = json.dumps(_snapshot_payload(req.snapshot), ensure_ascii=False, indent=2)
+    data_json = json.dumps(_explain_view(req.snapshot), ensure_ascii=False, indent=2)
     if req.issues:
         issues_block = "\n".join(f"- {i}" for i in req.issues)
         issues_section = f"""
@@ -346,6 +409,10 @@ def _build_explain_prompt(req: ExplainRequest) -> str:
 - <b>계획이 옳은지 그른지 스스로 판단하지 마십시오.</b> 지적받지 않은 것을 문제라고 하거나,
   문제가 없다고 단정하지 마십시오. 판정은 규칙 엔진이 이미 한 것만 전달합니다.
 - 숫자를 지어내지 마십시오. 위 데이터에 있는 값만 쓰십시오.
+- 시각은 모두 한국 시간입니다. 위에 적힌 시각을 바꾸지 말고 그대로 쓰십시오.
+- 작업은 "작업 1"처럼 번호로만 주어집니다. 다른 이름을 붙이지 마십시오.
+- 데이터에 없는 일정이나 시각을 만들어 내지 마십시오. 지적 문장에만 나오는 일정은 지적 문장대로만 전하십시오.
+- 고치는 방법을 덧붙일 때 새 시각을 정해 주지 마십시오. 어느 쪽으로 옮기거나 줄이면 되는지만 쓰십시오.
 
 설명문만 출력하십시오. 머리말·꼬리말·따옴표 없이 본문만 쓰십시오.
 """
