@@ -82,9 +82,16 @@ class Settings(BaseSettings):
     complex_model: str = "groq/openai/gpt-oss-120b"       # 복합 추론: 계획 생성·재계획
     light_model: str = "groq/openai/gpt-oss-20b"          # 경량: 분류·요약
 
-    # ── 로컬 (W5+, 지금 미사용). 설정되면 경량 티어가 로컬로 라우팅됨.
-    local_model: str | None = None                       # 예: "ollama/qwen3:8b"
+    # ── 로컬. 설정되면 경량 티어가 로컬로 라우팅됨.
+    local_model: str | None = None                       # 예: "ollama/qwen3:4b-instruct"
     ollama_base_url: str | None = None
+    # Modal 등 공개 URL 뒤의 Ollama 용 토큰. `Authorization: Bearer <값>` 으로 실린다.
+    # Ollama 자체에는 인증이 없어서, 앞단(Modal 프록시 인증)이 이 헤더로 막는다.
+    ollama_api_key: str | None = None
+    # 🔴 로컬 호출만의 제한 시간. 넘기면 light_model(상용)로 다시 묻는다.
+    #    Modal 은 0대로 내려갔다 깨는 첫 요청이 35~96초였다(2026-10-20 실측) — EXPLAIN_TIMEOUT(15초)
+    #    안에서 폴백까지 끝내려면 로컬 몫이 그보다 훨씬 짧아야 한다. 깨어 있으면 2.5초 안팎.
+    local_timeout_seconds: float = 8.0
 
     # ── 서비스 ─────────────────────────────────────────────
     port: int = 8000

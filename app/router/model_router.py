@@ -5,7 +5,7 @@
 모아두므로, 상용↔로컬 전환은 **매핑(=env)만 바꾸면 되고 호출 코드는 안 바뀐다(드롭인)**.
 
 - COMPLEX(복합 추론: 계획 생성·재계획) → 상용 (기본: Google AI Studio 무료 티어)
-- LIGHT(경량: 분류·요약)            → 현재 상용, W5+ 에서 로컬 Qwen(Ollama)으로 교체
+- LIGHT(경량: 분류·요약)            → LOCAL_MODEL 이 있으면 로컬 Qwen(Ollama), 실패 시 상용 폴백
 
 제공자(Gemini·Claude·GPT)는 .env 의 모델 접두사로만 정해진다 — 이 파일은 제공자를 모른다.
 
@@ -13,12 +13,16 @@
 """
 from __future__ import annotations
 
+import asyncio
+import logging
 from dataclasses import dataclass
 from enum import Enum
 
 import litellm
 
 from app.config import Settings
+
+logger = logging.getLogger(__name__)
 
 
 class Tier(str, Enum):
@@ -41,12 +45,42 @@ class ModelRouter:
             # local_model이 설정되면 경량은 자동으로 로컬로 라우팅(W5+). 없으면 상용 저가.
             Tier.LIGHT: settings.local_model or settings.light_model,
         }
+        # 🔴 LiteLLM 은 ollama 모델의 비용표가 없으면 **호출마다** /api/show 를 동기로 2~3번 부른다.
+        #    그것도 api_base 가 아니라 기본값 localhost:11434 로 가서 매번 실패하고, 동기라 이벤트
+        #    루프까지 막는다. 2026-10-20 실측(Windows → Modal): 본 요청 2.2초 + 조회 8초 = 10.7초.
+        #    비용표에 미리 올려 두면 조회가 사라진다(2.1~2.9초).
+        if settings.local_model and settings.local_model.startswith("ollama/"):
+            litellm.register_model({settings.local_model: {
+                "litellm_provider": "ollama",
+                "mode": "chat",
+                "input_cost_per_token": 0.0,
+                "output_cost_per_token": 0.0,
+            }})
 
     def model_for(self, tier: Tier) -> str:
         return self._model_by_tier[tier]
 
     async def complete(self, prompt: str, tier: Tier = Tier.COMPLEX) -> RouterResult:
         model = self.model_for(tier)
+        if tier is not Tier.LIGHT or not self._settings.local_model:
+            return await self._call(prompt, tier, model)
+
+        # 로컬이 늦거나 죽으면 light_model 로 한 번 더 묻는다. 로컬 서버(Modal)는 0대로 내려갔다
+        # 깨는 데 수십 초가 걸리고, 그동안 사용자를 세워 두거나 504 를 낼 이유가 없다 —
+        # 같은 프롬프트를 상용 경량 모델이 1초 안팎에 받는다. 어느 쪽이 답했는지는 result.model 에 남는다.
+        try:
+            result = await asyncio.wait_for(
+                self._call(prompt, tier, model), timeout=self._settings.local_timeout_seconds
+            )
+            if result.output.strip():
+                return result
+            logger.warning("로컬 모델이 빈 응답을 돌려줌 — %s 로 폴백", self._settings.light_model)
+        except Exception as e:  # 타임아웃·연결 거부·401 모두 같은 길로 보낸다
+            logger.warning("로컬 모델 실패(%s: %s) — %s 로 폴백",
+                           type(e).__name__, e, self._settings.light_model)
+        return await self._call(prompt, tier, self._settings.light_model)
+
+    async def _call(self, prompt: str, tier: Tier, model: str) -> RouterResult:
         kwargs: dict = {
             "model": model,
             "messages": [{"role": "user", "content": prompt}],
@@ -77,6 +111,12 @@ class ModelRouter:
         if model.startswith("ollama/"):
             if self._settings.ollama_base_url:
                 kwargs["api_base"] = self._settings.ollama_base_url
+            # 🔴 api_key 인자로 주면 안 실린다 — LiteLLM 의 `ollama/`(generate) 경로는 api_key 를
+            #    헤더로 옮기지 않는다(1.91.4 확인, `ollama_chat/` 경로만 옮긴다). 헤더를 직접 싣는다.
+            if self._settings.ollama_api_key:
+                kwargs["extra_headers"] = {
+                    "Authorization": f"Bearer {self._settings.ollama_api_key}"
+                }
             # Qwen3 는 추론(thinking) 모델이라 기본값이 "<think> 블록을 먼저 생성"이다.
             # 끄지 않으면 max_tokens 를 추론에 다 쓰고 **본문이 빈 채로** 돌아온다.
             # 2026-08-11 실측(qwen3:1.7b, max_tokens=256, CPU):
