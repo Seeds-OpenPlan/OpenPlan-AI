@@ -45,8 +45,10 @@ image = (
     )
     # 모델을 이미지에 굽는다. 기동 때마다 5GB 를 내려받으면 콜드스타트가 그만큼 늘어난다.
     # pull 에는 서버가 떠 있어야 하므로 잠깐 띄웠다가 내린다.
+    # 🔴 set -e 가 없으면 pull 이 실패해도 마지막 kill 의 성공으로 빌드가 통과한다 — 모델 없는
+    #    이미지가 배포되고, 요청마다 "model not found" → Groq 폴백이라 화면으로는 티가 안 난다.
     .run_commands(
-        f"bash -c 'ollama serve & PID=$!; sleep 5; ollama pull {MODEL}; kill $PID'"
+        f"bash -c 'set -e; ollama serve & PID=$!; sleep 5; ollama pull {MODEL}; kill $PID'"
     )
 )
 

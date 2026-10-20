@@ -111,8 +111,9 @@ class ModelRouter:
         if model.startswith("ollama/"):
             if self._settings.ollama_base_url:
                 kwargs["api_base"] = self._settings.ollama_base_url
-            # 🔴 api_key 인자로 주면 안 실린다 — LiteLLM 의 `ollama/`(generate) 경로는 api_key 를
-            #    헤더로 옮기지 않는다(1.91.4 확인, `ollama_chat/` 경로만 옮긴다). 헤더를 직접 싣는다.
+            # api_key 인자로 줘도 LiteLLM 이 같은 헤더를 만든다(1.91.4 main.py `_complete_ollama`).
+            # 헤더를 직접 싣는 쪽을 택한 것은 그 변환이 버전마다 위치가 바뀌어 왔기 때문이고,
+            # 이 방식이 Modal 프록시 인증을 통과하는 것은 2026-10-20 실측으로 확인했다.
             if self._settings.ollama_api_key:
                 kwargs["extra_headers"] = {
                     "Authorization": f"Bearer {self._settings.ollama_api_key}"
